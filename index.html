@@ -1,0 +1,1659 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  STUDENT PORTFOLIO — single-file React app (local-first)
+  ============================================================================
+
+  HOW TO RUN
+  1. Save this file anywhere (for example "student-portfolio.html").
+  2. Double-click it to open it in a modern browser (Chrome, Edge, Firefox, Safari).
+     The page needs an internet connection the first time it loads, because
+     React, Tailwind CSS and Framer Motion are fetched from public CDNs.
+  3. Optional but recommended — serve it from a fixed local address so your
+     browser keeps your saved data under one stable "site":
+         python -m http.server 8000
+     then open http://localhost:8000/student-portfolio.html
+
+  HOW TO EDIT
+  - Turn on "Edit mode" in the top bar. Then use "Edit profile", "Add to hub",
+    and "Add link" to replace the sample content.
+
+  WHERE YOUR DATA LIVES
+  - Text, links and portfolio entry details -> this browser's localStorage.
+  - Attached files and the profile photo   -> this browser's IndexedDB.
+  - Nothing is uploaded to any server or cloud service.
+  - Browser storage can be cleared (clearing site data, private windows, some
+    browsers' automatic cleanup), is NOT backed up, and does NOT sync to other
+    devices. Keep the original copies of your files.
+
+  CODE MAP (all inside the single Babel script block at the bottom of this file)
+    1. Constants & sample content     5. Layout: Navbar, Footer, Toasts
+    2. Helpers (urls, files, dates)   6. Sections: Hero, About, PortfolioHub, Links
+    3. Storage (localStorage, IDB)    7. Dialogs: Profile, Entry, Link, Preview, Storage
+    4. UI kit (Icon, Button, Modal…)  8. App (state + wiring)
+  ============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="A student portfolio: introduction, about me, a hub of assignments and files, and social links." />
+  <title>Student Portfolio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%93%3C/text%3E%3C/svg%3E" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'ui-sans-serif', 'system-ui', '-apple-system', '"Segoe UI"', 'Roboto', 'sans-serif'],
+          },
+          colors: {
+            ink: { 950: '#070b17', 900: '#0b1020', 800: '#111833', 700: '#1a2347' },
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    html { scroll-behavior: smooth; }
+    body { background: #070b17; }
+    section[id] { scroll-margin-top: 5rem; }
+
+    /* Cohesive page background (fixed, behind everything) */
+    .bg-scene {
+      position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      background:
+        radial-gradient(60rem 40rem at 8% -8%, rgba(99, 102, 241, .30), transparent 60%),
+        radial-gradient(50rem 36rem at 96% 8%, rgba(45, 212, 191, .17), transparent 60%),
+        radial-gradient(44rem 30rem at 50% 112%, rgba(56, 189, 248, .14), transparent 60%),
+        linear-gradient(180deg, #0b1020 0%, #070b17 100%);
+    }
+
+    dialog::backdrop { background: rgba(3, 6, 18, .72); backdrop-filter: blur(4px); }
+    dialog[open] { animation: dialog-in .28s ease-out; }
+    @keyframes dialog-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+
+    ::selection { background: rgba(94, 234, 212, .35); color: #fff; }
+
+    /* Respect "reduce motion" for CSS-driven motion too (Framer Motion is handled in JS) */
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+
+<body class="bg-ink-950 font-sans text-slate-100 antialiased">
+  <div class="bg-scene" aria-hidden="true"></div>
+
+  <div id="root">
+    <p style="padding:3rem 1rem;text-align:center;color:#cbd5e1;font-family:system-ui,sans-serif">Loading your portfolio…</p>
+  </div>
+  <noscript>
+    <p style="padding:2rem;text-align:center;color:#fecaca;font-family:system-ui,sans-serif">
+      This portfolio needs JavaScript to run. Please enable JavaScript and reload the page.
+    </p>
+  </noscript>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/framer-motion@10.18.0/dist/framer-motion.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.10/babel.min.js"></script>
+
+  <script type="text/babel" data-presets="react">
+/* =========================================================================
+   1. CONSTANTS & SAMPLE CONTENT
+   ========================================================================= */
+const { useState, useEffect, useRef, useMemo, useCallback, useId } = React;
+
+const LS_PREFIX = 'sp:v1:';
+const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB per attached file
+const MAX_PHOTO_BYTES = 15 * 1024 * 1024; // 15 MB source photo (it is resized before saving)
+const DEFAULT_CATEGORIES = ['Assignment', 'Project', 'Report', 'Presentation', 'Certificate', 'Other'];
+
+const NAV = [
+  { id: 'home', label: 'Home' },
+  { id: 'about', label: 'About' },
+  { id: 'portfolio', label: 'Portfolio' },
+  { id: 'links', label: 'Links' },
+];
+
+const PLATFORMS = [
+  { id: 'github', label: 'GitHub', icon: 'github', placeholder: 'github.com/your-username' },
+  { id: 'linkedin', label: 'LinkedIn', icon: 'linkedin', placeholder: 'linkedin.com/in/your-name' },
+  { id: 'email', label: 'Email', icon: 'mail', placeholder: 'you@example.com' },
+  { id: 'instagram', label: 'Instagram', icon: 'instagram', placeholder: 'instagram.com/your-handle' },
+  { id: 'x', label: 'X (Twitter)', icon: 'twitter', placeholder: 'x.com/your-handle' },
+  { id: 'youtube', label: 'YouTube', icon: 'youtube', placeholder: 'youtube.com/@your-channel' },
+  { id: 'facebook', label: 'Facebook', icon: 'facebook', placeholder: 'facebook.com/your-name' },
+  { id: 'website', label: 'Website', icon: 'globe', placeholder: 'your-site.com' },
+  { id: 'other', label: 'Other', icon: 'link', placeholder: 'example.com/your-profile' },
+];
+const platformById = (id) => PLATFORMS.find((p) => p.id === id) || PLATFORMS[PLATFORMS.length - 1];
+
+const DEFAULT_PROFILE = {
+  isSample: true,
+  name: 'Ahmed Nashaat',
+  major: 'Software Engineering',
+  university: 'Your University',
+  status: 'Open to internships',
+  intro:
+    "I'm a sophomore Software Engineering student who enjoys turning ideas into working software. Welcome to my corner of the web — you'll find my coursework, projects and links here.",
+  bio:
+    "I'm in the early stages of my degree, building a solid foundation in programming, computer architecture and software design.\n\nOutside of class I like experimenting with web development, practicing problem solving, and learning how computers work from the ground up. I'm looking for internships where I can learn from experienced engineers and contribute to real projects.",
+  focus: 'Programming fundamentals in C++, computer architecture and organization, and modern web development.',
+  interests: ['Web development', 'Problem solving', 'Computer architecture', 'Multimedia', 'Open source'],
+  skills: ['C++', 'JavaScript', 'React', 'HTML & CSS', 'Git', 'Technical writing'],
+  photoVersion: null,
+};
+
+const makeDefaultLinks = () => [
+  { id: 'sample-link-1', platform: 'github', label: 'GitHub', url: 'https://github.com/your-username' },
+  { id: 'sample-link-2', platform: 'linkedin', label: 'LinkedIn', url: 'https://www.linkedin.com/in/your-name' },
+  { id: 'sample-link-3', platform: 'email', label: 'Email', url: 'mailto:you@example.com' },
+];
+
+const makeSampleEntries = () => {
+  const day = 86400000;
+  const now = Date.now();
+  const base = { hasFile: false, fileName: '', fileType: '', fileSize: 0, sample: true };
+  return [
+    { ...base, id: 'sample-1', title: 'C++ Fundamentals — Assignment 1', category: 'Assignment',
+      description: 'Practice problems on loops, functions and arrays, solved in C++.',
+      dateAdded: new Date(now - 6 * day).toISOString() },
+    { ...base, id: 'sample-2', title: 'Computer Architecture — Lab Report', category: 'Report',
+      description: 'A short report on number systems and how a CPU executes instructions.',
+      dateAdded: new Date(now - 13 * day).toISOString() },
+    { ...base, id: 'sample-3', title: 'Multimedia — Poster Design', category: 'Project',
+      description: 'A poster exploring color, typography and layout.',
+      dateAdded: new Date(now - 21 * day).toISOString() },
+    { ...base, id: 'sample-4', title: 'Technical English — Presentation', category: 'Presentation',
+      description: 'Slides for a short talk on writing clear technical documentation.',
+      dateAdded: new Date(now - 30 * day).toISOString() },
+  ];
+};
+
+/* =========================================================================
+   2. HELPERS
+   ========================================================================= */
+const FOCUS =
+  'focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-900';
+const INPUT =
+  'w-full rounded-xl border border-white/15 bg-ink-900 px-3.5 py-2.5 text-slate-100 placeholder:text-slate-400 focus:border-teal-300 focus:outline-none focus:ring-2 focus:ring-teal-300/40 aria-[invalid=true]:border-rose-400';
+
+const uid = () =>
+  typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+
+const getInitials = (name = '') => {
+  const letters = name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+  return letters || '?';
+};
+
+const formatBytes = (n) => {
+  if (!n && n !== 0) return '';
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+  return `${n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
+};
+
+const formatDate = (iso) => {
+  const d = new Date(iso);
+  return isNaN(d) ? '' : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+};
+
+const parseTags = (text) => {
+  const seen = new Set();
+  return text
+    .split(/[,\n]/)
+    .map((t) => t.trim())
+    .filter((t) => t && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()))
+    .map((t) => t.slice(0, 40))
+    .slice(0, 24);
+};
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Turns whatever the user typed into a safe http(s) or mailto link, or returns an error message. */
+function normalizeUrl(raw) {
+  const v = (raw || '').trim();
+  if (!v) return { error: 'Enter a web address or an email address.' };
+  if (/^mailto:/i.test(v)) {
+    const addr = v.slice(7).split('?')[0];
+    return EMAIL_RE.test(addr) ? { url: 'mailto:' + addr } : { error: 'That email address does not look right.' };
+  }
+  if (EMAIL_RE.test(v)) return { url: 'mailto:' + v };
+  if (/^(javascript|data|vbscript|file|blob|about):/i.test(v)) {
+    return { error: 'Only web links (http or https) and email addresses are allowed.' };
+  }
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : 'https://' + v;
+  try {
+    const u = new URL(withProtocol);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      return { error: 'Only web links (http or https) and email addresses are allowed.' };
+    }
+    if (!u.hostname.includes('.')) {
+      return { error: 'That does not look like a full web address, e.g. github.com/your-name.' };
+    }
+    return { url: u.toString() };
+  } catch (e) {
+    return { error: 'That does not look like a valid web address.' };
+  }
+}
+
+/** Last line of defence when rendering: never output anything but http(s)/mailto links. */
+function safeHref(url) {
+  try {
+    const u = new URL(url);
+    return ['http:', 'https:', 'mailto:'].includes(u.protocol) ? u.toString() : '#';
+  } catch (e) {
+    return '#';
+  }
+}
+const isMail = (url) => /^mailto:/i.test(url);
+const extProps = (url) => (isMail(url) ? {} : { target: '_blank', rel: 'noopener noreferrer' });
+const displayUrl = (url) => {
+  if (isMail(url)) return url.replace(/^mailto:/i, '');
+  try { const u = new URL(url); return (u.host + u.pathname).replace(/\/$/, ''); } catch (e) { return url; }
+};
+
+const TEXT_EXT = ['txt','md','csv','json','js','jsx','ts','tsx','py','java','c','cpp','cc','h','hpp','cs','css','html','htm','xml','yml','yaml','log','sql','sh','ini','tex','r','m','php','rb','go','rs','kt','swift'];
+const extOf = (name = '') => { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : ''; };
+
+function fileKind(name = '', type = '') {
+  const ext = extOf(name);
+  if (type.startsWith('image/') || ['png','jpg','jpeg','gif','webp','svg','bmp','avif'].includes(ext)) return 'image';
+  if (type === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (type.startsWith('video/') || ['mp4','webm','mov','m4v','ogv'].includes(ext)) return 'video';
+  if (type.startsWith('audio/') || ['mp3','wav','ogg','m4a','aac'].includes(ext)) return 'audio';
+  if (['doc','docx','odt','rtf'].includes(ext)) return 'doc';
+  if (['ppt','pptx','odp','key'].includes(ext)) return 'slides';
+  if (['xls','xlsx','ods'].includes(ext)) return 'sheet';
+  if (['zip','rar','7z','tar','gz'].includes(ext)) return 'archive';
+  if (type.startsWith('text/') || TEXT_EXT.includes(ext)) return 'text';
+  return 'file';
+}
+const PREVIEWABLE = new Set(['image', 'pdf', 'video', 'audio', 'text']);
+const KIND_NAME = { image: 'Image', pdf: 'PDF document', video: 'Video', audio: 'Audio', doc: 'Word / text document', slides: 'Presentation', sheet: 'Spreadsheet', archive: 'Archive', text: 'Text or code', file: 'File' };
+const KIND_STYLE = {
+  pdf: 'bg-rose-400/15 text-rose-200 ring-rose-300/30',
+  image: 'bg-sky-400/15 text-sky-200 ring-sky-300/30',
+  doc: 'bg-blue-400/15 text-blue-200 ring-blue-300/30',
+  slides: 'bg-amber-400/15 text-amber-200 ring-amber-300/30',
+  sheet: 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/30',
+  text: 'bg-slate-400/15 text-slate-200 ring-slate-300/30',
+  video: 'bg-violet-400/15 text-violet-200 ring-violet-300/30',
+  audio: 'bg-pink-400/15 text-pink-200 ring-pink-300/30',
+  archive: 'bg-orange-400/15 text-orange-200 ring-orange-300/30',
+  file: 'bg-slate-400/15 text-slate-200 ring-slate-300/30',
+};
+
+function friendlyError(err) {
+  if (err && err.name === 'QuotaExceededError') {
+    return 'Your browser has run out of storage space for this site. Remove some files and try again.';
+  }
+  return err && err.message ? err.message : 'Something went wrong while saving. Please try again.';
+}
+
+/** Shrinks a chosen profile photo so it stays small in browser storage. */
+async function resizeImage(file, max = 800) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('That file could not be read as an image.'));
+      i.src = url;
+    });
+    const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.9));
+    if (!blob) throw new Error('That image could not be processed.');
+    return blob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/* =========================================================================
+   3. STORAGE — localStorage for details, IndexedDB for file contents
+   ========================================================================= */
+function storageAvailable() {
+  try { const k = '__sp_test__'; localStorage.setItem(k, '1'); localStorage.removeItem(k); return true; }
+  catch (e) { return false; }
+}
+const LS_OK = storageAvailable();
+const IDB_OK = typeof indexedDB !== 'undefined';
+
+function usePersistentState(key, makeInitial, sanitize = (v) => v) {
+  const [value, setValue] = useState(() => {
+    if (LS_OK) {
+      try {
+        const raw = localStorage.getItem(LS_PREFIX + key);
+        if (raw !== null) return sanitize(JSON.parse(raw));
+      } catch (e) { /* fall back to defaults */ }
+    }
+    return makeInitial();
+  });
+  useEffect(() => {
+    if (!LS_OK) return;
+    try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(value)); }
+    catch (e) { window.dispatchEvent(new Event('sp:storage-error')); }
+  }, [key, value]);
+  return [value, setValue];
+}
+
+const DB_NAME = 'student-portfolio';
+const DB_STORE = 'files';
+let dbPromise = null;
+function openDB() {
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve, reject) => {
+      if (!IDB_OK) { reject(new Error('This browser does not support IndexedDB, so files cannot be stored.')); return; }
+      let req;
+      try { req = indexedDB.open(DB_NAME, 1); } catch (e) { reject(e); return; }
+      req.onupgradeneeded = () => { req.result.createObjectStore(DB_STORE, { keyPath: 'id' }); };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('Could not open browser storage.'));
+    });
+    dbPromise.catch(() => { dbPromise = null; });
+  }
+  return dbPromise;
+}
+function idbRun(mode, fn) {
+  return openDB().then((db) => new Promise((resolve, reject) => {
+    const t = db.transaction(DB_STORE, mode);
+    const request = fn(t.objectStore(DB_STORE));
+    let result;
+    if (request) request.onsuccess = () => { result = request.result; };
+    t.oncomplete = () => resolve(result);
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error || new Error('Browser storage rejected the change.'));
+  }));
+}
+const fileStore = {
+  put: (record) => idbRun('readwrite', (s) => s.put(record)),
+  get: (id) => idbRun('readonly', (s) => s.get(id)),
+  remove: (id) => idbRun('readwrite', (s) => s.delete(id)),
+};
+
+function usePhotoUrl(version) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    if (!version) { setUrl(null); return undefined; }
+    let cancelled = false;
+    let objectUrl = null;
+    fileStore.get('profile-photo')
+      .then((rec) => {
+        if (cancelled || !rec) return;
+        objectUrl = URL.createObjectURL(rec.blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [version]);
+  return url;
+}
+
+/* =========================================================================
+   4. UI KIT — Icon, Button, Modal, form fields, Reveal (Framer Motion)
+   ========================================================================= */
+const FM = window.Motion || null;
+const motion = FM ? FM.motion : null;
+const useReducedMotion = FM ? FM.useReducedMotion : () => true;
+
+/** Slow, gentle reveal-on-scroll. Renders plain markup when motion is reduced or unavailable. */
+function Reveal({ children, delay = 0, y = 28, as = 'div', className = '', ...rest }) {
+  const reduce = useReducedMotion();
+  if (!motion || reduce) {
+    const Tag = as;
+    return <Tag className={className} {...rest}>{children}</Tag>;
+  }
+  const M = motion[as];
+  return (
+    <M
+      className={className}
+      initial={{ opacity: 0, y }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: '0px 0px -80px 0px' }}
+      transition={{ duration: 0.9, delay, ease: [0.22, 1, 0.36, 1] }}
+      {...rest}
+    >
+      {children}
+    </M>
+  );
+}
+
+const ICONS = {
+  github: <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22" />,
+  linkedin: <><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z" /><rect x="2" y="9" width="4" height="12" /><circle cx="4" cy="4" r="2" /></>,
+  instagram: <><rect x="2" y="2" width="20" height="20" rx="5" ry="5" /><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" /><line x1="17.5" y1="6.5" x2="17.51" y2="6.5" /></>,
+  twitter: <path d="M23 3a10.9 10.9 0 0 1-3.14 1.53 4.48 4.48 0 0 0-7.86 3v1A10.66 10.66 0 0 1 3 4s-4 9 5 13a11.64 11.64 0 0 1-7 2c9 5 20 0 20-11.5a4.5 4.5 0 0 0-.08-.83A7.72 7.72 0 0 0 23 3z" />,
+  youtube: <><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z" /><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02" /></>,
+  facebook: <path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z" />,
+  mail: <><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></>,
+  globe: <><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></>,
+  link: <><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></>,
+  plus: <><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></>,
+  edit: <><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></>,
+  trash: <><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></>,
+  download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></>,
+  eye: <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>,
+  search: <><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>,
+  x: <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>,
+  menu: <><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></>,
+  file: <><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><polyline points="13 2 13 9 20 9" /></>,
+  folder: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />,
+  external: <><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></>,
+  upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>,
+  lock: <><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></>,
+  info: <><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></>,
+  user: <><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></>,
+};
+
+function Icon({ name, className = 'h-5 w-5' }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+         className={className} aria-hidden="true" focusable="false">
+      {ICONS[name] || ICONS.link}
+    </svg>
+  );
+}
+
+const BTN_VARIANT = {
+  primary: 'bg-teal-300 text-slate-900 hover:bg-teal-200',
+  secondary: 'border border-white/15 bg-white/10 text-slate-100 hover:bg-white/15',
+  ghost: 'text-slate-200 hover:bg-white/10',
+  danger: 'bg-rose-600 text-white hover:bg-rose-500',
+};
+const BTN_SIZE = { sm: 'px-3.5 py-2 text-sm', md: 'px-4 py-2.5 text-sm', lg: 'px-6 py-3 text-base' };
+const btnClass = (variant, size, extra = '') =>
+  `inline-flex items-center justify-center gap-2 rounded-full font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS} ${BTN_VARIANT[variant]} ${BTN_SIZE[size]} ${extra}`;
+
+function Button({ variant = 'secondary', size = 'md', icon, className = '', children, ...props }) {
+  return (
+    <button type="button" className={btnClass(variant, size, className)} {...props}>
+      {icon && <Icon name={icon} className="h-4 w-4" />}
+      {children}
+    </button>
+  );
+}
+
+function ButtonLink({ variant = 'secondary', size = 'md', icon, className = '', children, ...props }) {
+  return (
+    <a className={btnClass(variant, size, className)} {...props}>
+      {icon && <Icon name={icon} className="h-4 w-4" />}
+      {children}
+    </a>
+  );
+}
+
+const MODAL_SIZE = { sm: 'max-w-md', md: 'max-w-xl', lg: 'max-w-3xl', xl: 'max-w-5xl' };
+
+/** Accessible modal built on the native <dialog>: focus trap, Esc to close, focus returns to the opener. */
+function Modal({ title, description, onClose, size = 'md', footer, children }) {
+  const ref = useRef(null);
+  const titleId = useId();
+  const descId = useId();
+  const downOnBackdrop = useRef(false);
+
+  useEffect(() => {
+    const d = ref.current;
+    const previouslyFocused = document.activeElement;
+    if (d && !d.open) d.showModal();
+    const auto = d && d.querySelector('[data-autofocus]');
+    if (auto) auto.focus();
+    const prevOverflow = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = 'hidden';
+    return () => {
+      document.documentElement.style.overflow = prevOverflow;
+      if (d && d.open) d.close();
+      if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
+    };
+  }, []);
+
+  return (
+    <dialog
+      ref={ref}
+      aria-labelledby={titleId}
+      aria-describedby={description ? descId : undefined}
+      onClose={onClose}
+      onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && downOnBackdrop.current) onClose(); }}
+      className={`m-auto w-[calc(100%-1.5rem)] ${MODAL_SIZE[size]} overflow-hidden rounded-3xl border border-white/15 bg-ink-800 p-0 text-slate-100 shadow-2xl`}
+    >
+      <div className="flex max-h-[92dvh] flex-col">
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4 sm:px-6">
+          <div className="min-w-0">
+            <h2 id={titleId} className="break-words text-xl font-bold text-white">{title}</h2>
+            {description && <p id={descId} className="mt-1 text-sm text-slate-300">{description}</p>}
+          </div>
+          <button type="button" aria-label="Close dialog" onClick={onClose}
+                  className={`shrink-0 rounded-full p-2 text-slate-300 hover:bg-white/10 hover:text-white ${FOCUS}`}>
+            <Icon name="x" className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="overflow-y-auto px-5 py-5 sm:px-6">{children}</div>
+        {footer && (
+          <div className="flex flex-wrap justify-end gap-3 border-t border-white/10 bg-ink-900/60 px-5 py-4 sm:px-6">{footer}</div>
+        )}
+      </div>
+    </dialog>
+  );
+}
+
+function ConfirmDialog({ title, message, confirmLabel = 'Remove', onConfirm, onCancel, busy }) {
+  return (
+    <Modal
+      title={title}
+      size="sm"
+      onClose={onCancel}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} data-autofocus>Cancel</Button>
+          <Button variant="danger" icon="trash" onClick={onConfirm} disabled={busy}>{confirmLabel}</Button>
+        </>
+      }
+    >
+      <p className="leading-relaxed text-slate-200">{message}</p>
+    </Modal>
+  );
+}
+
+/** Label + control + hint + inline error, wired together for screen readers. */
+function TextField({ label, value, onChange, error, hint, required, as = 'input', children, ...rest }) {
+  const id = useId();
+  const hintId = `${id}-hint`;
+  const errId = `${id}-err`;
+  const Tag = as;
+  const describedBy = [hint && hintId, error && errId].filter(Boolean).join(' ') || undefined;
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1.5 block text-sm font-medium text-slate-100">
+        {label}
+        {required && <span className="text-rose-300" aria-hidden="true"> *</span>}
+        {required && <span className="sr-only"> (required)</span>}
+      </label>
+      <Tag id={id} value={value} onChange={(e) => onChange(e.target.value)}
+           aria-invalid={error ? 'true' : 'false'} aria-describedby={describedBy}
+           className={INPUT} {...rest}>
+        {children}
+      </Tag>
+      {hint && <p id={hintId} className="mt-1 text-xs text-slate-400">{hint}</p>}
+      {error && <p id={errId} className="mt-1 text-sm text-rose-300">{error}</p>}
+    </div>
+  );
+}
+
+function focusFirstInvalid(formRef) {
+  requestAnimationFrame(() => {
+    const el = formRef.current && formRef.current.querySelector('[aria-invalid="true"]');
+    if (el) el.focus();
+  });
+}
+
+function SectionHeading({ id, eyebrow, title, children, action }) {
+  return (
+    <Reveal className="mb-10 flex flex-wrap items-end justify-between gap-4">
+      <div className="max-w-2xl">
+        <p className="text-sm font-semibold uppercase tracking-widest text-teal-300">{eyebrow}</p>
+        <h2 id={id} className="mt-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">{title}</h2>
+        {children && <p className="mt-3 leading-relaxed text-slate-300">{children}</p>}
+      </div>
+      {action}
+    </Reveal>
+  );
+}
+
+function Chips({ items, tone = 'teal' }) {
+  const tones = {
+    teal: 'bg-teal-300/10 text-teal-100 ring-teal-300/25',
+    indigo: 'bg-indigo-400/10 text-indigo-100 ring-indigo-300/25',
+  };
+  return (
+    <ul className="flex flex-wrap gap-2">
+      {items.map((t) => (
+        <li key={t} className={`rounded-full px-3 py-1 text-sm font-medium ring-1 ring-inset ${tones[tone]}`}>{t}</li>
+      ))}
+    </ul>
+  );
+}
+
+function ProfilePhoto({ name, url, className = '' }) {
+  const initials = getInitials(name);
+  return (
+    <div className={`relative aspect-[4/5] overflow-hidden rounded-[2rem] border border-white/15 bg-gradient-to-br from-indigo-500/40 to-teal-400/30 shadow-2xl shadow-black/40 ${className}`}>
+      {url ? (
+        <img src={url} alt={`Portrait of ${name}`} className="h-full w-full object-cover" />
+      ) : (
+        <div role="img" aria-label={`Placeholder avatar with the initials ${initials}`}
+             className="flex h-full w-full items-center justify-center text-7xl font-extrabold text-white/90">
+          {initials}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================================
+   5. LAYOUT — Navbar, Footer, Toasts, banners
+   ========================================================================= */
+function EditSwitch({ on, onChange }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} onClick={() => onChange(!on)}
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-medium transition ${FOCUS} ${on ? 'border-teal-300/50 bg-teal-300/15 text-teal-100' : 'border-white/15 bg-white/5 text-slate-200'}`}>
+      <span className={`relative inline-block h-5 w-9 rounded-full transition ${on ? 'bg-teal-300' : 'bg-slate-600'}`} aria-hidden="true">
+        <span className={`absolute top-0.5 h-4 w-4 rounded-full transition-all ${on ? 'left-[1.125rem] bg-ink-900' : 'left-0.5 bg-white'}`} />
+      </span>
+      <span>Edit mode</span>
+    </button>
+  );
+}
+
+function Navbar({ name, editMode, setEditMode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <header className="sticky top-0 z-40 border-b border-white/10 bg-ink-950/80 backdrop-blur">
+      <nav aria-label="Main" className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <a href="#home" className={`flex items-center gap-3 rounded-full ${FOCUS}`}>
+          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-teal-300 text-sm font-extrabold text-slate-900" aria-hidden="true">
+            {getInitials(name)}
+          </span>
+          <span className="hidden text-sm font-semibold text-white sm:inline">{name}</span>
+        </a>
+
+        <ul className="hidden items-center gap-1 md:flex">
+          {NAV.map((n) => (
+            <li key={n.id}>
+              <a href={`#${n.id}`} className={`rounded-full px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10 hover:text-white ${FOCUS}`}>{n.label}</a>
+            </li>
+          ))}
+        </ul>
+
+        <div className="flex items-center gap-2">
+          <EditSwitch on={editMode} onChange={setEditMode} />
+          <button type="button" aria-label={open ? 'Close menu' : 'Open menu'} aria-expanded={open} aria-controls="mobile-menu"
+                  onClick={() => setOpen((o) => !o)}
+                  className={`rounded-full p-2 text-slate-100 hover:bg-white/10 md:hidden ${FOCUS}`}>
+            <Icon name={open ? 'x' : 'menu'} />
+          </button>
+        </div>
+      </nav>
+      {open && (
+        <ul id="mobile-menu" className="border-t border-white/10 px-4 py-2 md:hidden">
+          {NAV.map((n) => (
+            <li key={n.id}>
+              <a href={`#${n.id}`} onClick={() => setOpen(false)}
+                 className={`block rounded-xl px-3 py-3 text-base font-medium text-slate-100 hover:bg-white/10 ${FOCUS}`}>{n.label}</a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </header>
+  );
+}
+
+function Banner({ tone = 'info', children }) {
+  const tones = {
+    info: 'border-teal-300/30 bg-teal-300/10 text-teal-50',
+    warn: 'border-amber-300/40 bg-amber-300/10 text-amber-50',
+  };
+  return (
+    <div className={`border-b px-4 py-2.5 text-center text-sm sm:px-6 ${tones[tone]}`}>{children}</div>
+  );
+}
+
+function Toasts({ toasts, dismiss }) {
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[60] flex flex-col items-center gap-2 px-4" role="status" aria-live="polite">
+      {toasts.map((t) => (
+        <div key={t.id}
+             className={`pointer-events-auto flex max-w-md items-start gap-3 rounded-2xl border px-4 py-3 text-sm shadow-xl ${t.type === 'error' ? 'border-rose-300/40 bg-rose-950 text-rose-50' : 'border-teal-300/30 bg-ink-800 text-slate-100'}`}>
+          <span className="leading-relaxed">{t.message}</span>
+          <button type="button" aria-label="Dismiss notification" onClick={() => dismiss(t.id)}
+                  className={`shrink-0 rounded-full p-0.5 text-slate-300 hover:text-white ${FOCUS}`}>
+            <Icon name="x" className="h-4 w-4" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Footer({ name, onStorageInfo }) {
+  return (
+    <footer className="border-t border-white/10 px-4 py-10 text-center text-sm text-slate-400 sm:px-6">
+      <p>
+        &copy; {new Date().getFullYear()} {name}. Built with React, Tailwind CSS and Framer Motion.
+      </p>
+      <p className="mt-2">
+        Your content is stored only in this browser.{' '}
+        <button type="button" onClick={onStorageInfo} className={`rounded font-medium text-teal-300 underline underline-offset-4 hover:text-teal-200 ${FOCUS}`}>
+          How storage works
+        </button>
+      </p>
+    </footer>
+  );
+}
+
+/* =========================================================================
+   6. SECTIONS
+   ========================================================================= */
+function SocialPills({ links }) {
+  if (!links.length) return null;
+  return (
+    <ul className="flex flex-wrap gap-2.5" aria-label="Social profiles">
+      {links.map((l) => (
+        <li key={l.id}>
+          <a href={safeHref(l.url)} {...extProps(l.url)}
+             className={`inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 transition hover:border-teal-300/50 hover:bg-teal-300/10 ${FOCUS}`}>
+            <Icon name={platformById(l.platform).icon} className="h-4 w-4" />
+            {l.label}
+            {!isMail(l.url) && <span className="sr-only"> (opens in a new tab)</span>}
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Hero({ profile, links, photoUrl, editMode, onEditProfile }) {
+  return (
+    <section id="home" aria-labelledby="hero-title"
+             className="mx-auto grid max-w-6xl items-center gap-12 px-4 pb-16 pt-14 sm:px-6 md:grid-cols-[1.15fr_0.85fr] md:pt-24">
+      <div>
+        <Reveal>
+          <p className="inline-flex items-center gap-2 rounded-full border border-teal-300/30 bg-teal-300/10 px-4 py-1.5 text-sm font-medium text-teal-100">
+            <span className="h-2 w-2 rounded-full bg-teal-300" aria-hidden="true" />
+            {profile.status || 'University student'}
+          </p>
+        </Reveal>
+        <Reveal delay={0.1}>
+          <h1 id="hero-title" className="mt-6 text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-5xl lg:text-6xl">
+            Hi, I&rsquo;m{' '}
+            <span className="bg-gradient-to-r from-teal-200 via-sky-200 to-indigo-200 bg-clip-text text-transparent">{profile.name}</span>
+          </h1>
+        </Reveal>
+        <Reveal delay={0.2}>
+          <p className="mt-4 text-lg font-medium text-slate-100">
+            {profile.major} student{profile.university ? ` · ${profile.university}` : ''}
+          </p>
+        </Reveal>
+        <Reveal delay={0.3}>
+          <p className="mt-4 max-w-xl text-base leading-relaxed text-slate-300 sm:text-lg">{profile.intro}</p>
+        </Reveal>
+        <Reveal delay={0.4} className="mt-8 flex flex-wrap gap-3">
+          <ButtonLink href="#portfolio" variant="primary" size="lg" icon="folder">Browse my work</ButtonLink>
+          <ButtonLink href="#about" variant="secondary" size="lg">About me</ButtonLink>
+        </Reveal>
+        <Reveal delay={0.5} className="mt-8">
+          {links.length > 0 ? (
+            <SocialPills links={links} />
+          ) : editMode ? (
+            <a href="#links" className={`inline-flex items-center gap-2 rounded-full text-sm font-medium text-teal-300 underline underline-offset-4 ${FOCUS}`}>
+              <Icon name="plus" className="h-4 w-4" /> Add your social links
+            </a>
+          ) : null}
+        </Reveal>
+      </div>
+
+      <Reveal delay={0.2} className="mx-auto w-full max-w-xs sm:max-w-sm">
+        <div className="relative isolate">
+          <div className="absolute -inset-4 -z-10 rounded-[2.5rem] bg-gradient-to-br from-indigo-500/30 to-teal-400/20 blur-2xl" aria-hidden="true" />
+          <ProfilePhoto name={profile.name} url={photoUrl} />
+        </div>
+        {editMode && (
+          <div className="mt-4 flex justify-center">
+            <Button variant="secondary" size="sm" icon="edit" onClick={onEditProfile}>Edit profile &amp; photo</Button>
+          </div>
+        )}
+      </Reveal>
+    </section>
+  );
+}
+
+function About({ profile, editMode, onEditProfile }) {
+  const paragraphs = (profile.bio || '').split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  return (
+    <section id="about" aria-labelledby="about-title" className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
+      <SectionHeading id="about-title" eyebrow="About me" title="A little more about me"
+        action={editMode && <Button variant="secondary" icon="edit" onClick={onEditProfile}>Edit about me</Button>}>
+        My story, what I care about, and what I&rsquo;m working toward.
+      </SectionHeading>
+
+      <div className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+        <Reveal className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 sm:p-8">
+          <h3 className="text-lg font-semibold text-white">Biography</h3>
+          <div className="mt-4 space-y-4 leading-relaxed text-slate-300">
+            {paragraphs.length ? paragraphs.map((p, i) => <p key={i}>{p}</p>) : <p>No biography yet.</p>}
+          </div>
+        </Reveal>
+
+        <div className="space-y-6">
+          <Reveal delay={0.1} className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
+            <h3 className="text-lg font-semibold text-white">Academic focus</h3>
+            <p className="mt-3 leading-relaxed text-slate-300">{profile.focus || 'Not added yet.'}</p>
+          </Reveal>
+          <Reveal delay={0.2} className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
+            <h3 className="mb-3 text-lg font-semibold text-white">Interests</h3>
+            {profile.interests.length ? <Chips items={profile.interests} tone="indigo" /> : <p className="text-slate-400">Not added yet.</p>}
+          </Reveal>
+          <Reveal delay={0.3} className="rounded-3xl border border-white/10 bg-white/[0.04] p-6">
+            <h3 className="mb-3 text-lg font-semibold text-white">Skills</h3>
+            {profile.skills.length ? <Chips items={profile.skills} /> : <p className="text-slate-400">Not added yet.</p>}
+          </Reveal>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function EntryCard({ entry, editMode, onPreview, onDownload, onEdit, onDelete }) {
+  const kind = fileKind(entry.fileName, entry.fileType);
+  const ext = extOf(entry.fileName);
+  const canPreview = entry.hasFile && PREVIEWABLE.has(kind);
+  return (
+    <article className="flex h-full flex-col rounded-3xl border border-white/10 bg-white/[0.04] p-5 shadow-lg shadow-black/20 transition hover:border-white/25 hover:bg-white/[0.07]">
+      <div className="flex items-start gap-4">
+        {entry.hasFile ? (
+          <span className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-xs font-bold ring-1 ring-inset ${KIND_STYLE[kind]}`} aria-hidden="true">
+            {(ext || 'FILE').slice(0, 4).toUpperCase()}
+          </span>
+        ) : (
+          <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/5 text-slate-300 ring-1 ring-inset ring-white/15" aria-hidden="true">
+            <Icon name="file" className="h-6 w-6" />
+          </span>
+        )}
+        <div className="min-w-0">
+          <h3 className="break-words text-lg font-semibold leading-snug text-white">{entry.title}</h3>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-indigo-400/15 px-2.5 py-0.5 text-xs font-medium text-indigo-100 ring-1 ring-inset ring-indigo-300/30">{entry.category}</span>
+            {entry.sample && <span className="rounded-full bg-amber-300/15 px-2.5 py-0.5 text-xs font-medium text-amber-100 ring-1 ring-inset ring-amber-300/30">Sample</span>}
+          </div>
+        </div>
+      </div>
+
+      {entry.description && <p className="mt-4 line-clamp-3 text-sm leading-relaxed text-slate-300">{entry.description}</p>}
+
+      <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dt className="text-slate-400">File</dt>
+        <dd className="min-w-0 truncate text-slate-200" title={entry.hasFile ? entry.fileName : undefined}>{entry.hasFile ? entry.fileName : 'No file attached yet'}</dd>
+        <dt className="text-slate-400">Type</dt>
+        <dd className="text-slate-200">{entry.hasFile ? KIND_NAME[kind] : '—'}</dd>
+        <dt className="text-slate-400">Size</dt>
+        <dd className="text-slate-200">{entry.hasFile ? formatBytes(entry.fileSize) : '—'}</dd>
+        <dt className="text-slate-400">Added</dt>
+        <dd className="text-slate-200">{formatDate(entry.dateAdded)}</dd>
+      </dl>
+
+      <div className="mt-auto flex flex-wrap gap-2 pt-5">
+        {canPreview && <Button size="sm" icon="eye" onClick={onPreview} aria-label={`Preview ${entry.title}`}>Preview</Button>}
+        {entry.hasFile && <Button size="sm" icon="download" onClick={onDownload} aria-label={`Download ${entry.title}`}>Download</Button>}
+        {editMode && (
+          <>
+            <Button size="sm" variant="ghost" icon="edit" onClick={onEdit} aria-label={`Edit ${entry.title}`}>Edit</Button>
+            <Button size="sm" variant="ghost" icon="trash" onClick={onDelete} aria-label={`Remove ${entry.title}`}>Remove</Button>
+          </>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function PortfolioHub({ entries, editMode, saveEntry, removeEntry, notify, openStorage }) {
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('All');
+  const [formState, setFormState] = useState(null); // { entry: Entry | null }
+  const [previewEntry, setPreviewEntry] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const searchId = useId();
+
+  const categories = useMemo(() => {
+    const counts = new Map();
+    entries.forEach((e) => counts.set(e.category, (counts.get(e.category) || 0) + 1));
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [entries]);
+
+  useEffect(() => {
+    if (category !== 'All' && !categories.some(([c]) => c === category)) setCategory('All');
+  }, [categories, category]);
+
+  const filtered = useMemo(() => {
+    const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+    return [...entries]
+      .sort((a, b) => new Date(b.dateAdded) - new Date(a.dateAdded))
+      .filter((e) => {
+        if (category !== 'All' && e.category !== category) return false;
+        const haystack = `${e.title} ${e.description} ${e.fileName} ${e.category}`.toLowerCase();
+        return tokens.every((t) => haystack.includes(t));
+      });
+  }, [entries, query, category]);
+
+  async function handleDownload(entry) {
+    try {
+      const rec = await fileStore.get(entry.id);
+      if (!rec) throw new Error('missing');
+      const url = URL.createObjectURL(rec.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = entry.fileName || 'download';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) {
+      notify('That file could not be read from browser storage. It may have been cleared — try attaching it again with Edit.', 'error');
+    }
+  }
+
+  async function confirmDelete() {
+    setDeleting(true);
+    await removeEntry(deleteTarget);
+    setDeleting(false);
+    setDeleteTarget(null);
+  }
+
+  const clearFilters = () => { setQuery(''); setCategory('All'); };
+  const filtersActive = query.trim() !== '' || category !== 'All';
+
+  return (
+    <section id="portfolio" aria-labelledby="portfolio-title" className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
+      <SectionHeading id="portfolio-title" eyebrow="Portfolio hub" title="Assignments & projects"
+        action={editMode && <Button variant="primary" icon="plus" onClick={() => setFormState({ entry: null })}>Add to hub</Button>}>
+        Browse my coursework and other files. Search by keyword or filter by category, then preview or download what you need.
+      </SectionHeading>
+
+      <Reveal className="mb-6 flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-slate-300">
+        <Icon name="lock" className="h-4 w-4 shrink-0 text-teal-300" />
+        <p className="min-w-0 flex-1">
+          Files are kept <strong className="font-semibold text-white">only in this browser</strong> (IndexedDB). They are not uploaded, not backed up, and won&rsquo;t appear on other devices.
+        </p>
+        <button type="button" onClick={openStorage} className={`rounded font-medium text-teal-300 underline underline-offset-4 hover:text-teal-200 ${FOCUS}`}>
+          How storage works
+        </button>
+      </Reveal>
+
+      <Reveal className="mb-6 space-y-4">
+        <div className="relative">
+          <label htmlFor={searchId} className="sr-only">Search portfolio files</label>
+          <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"><Icon name="search" className="h-5 w-5" /></span>
+          <input id={searchId} type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+                 placeholder="Search by title, description, file name or category…" autoComplete="off"
+                 className={`${INPUT} rounded-full py-3 pl-12 pr-4`} />
+        </div>
+        {categories.length > 0 && (
+          <div role="group" aria-label="Filter by category" className="flex flex-wrap gap-2">
+            {[['All', entries.length], ...categories].map(([c, n]) => (
+              <button key={c} type="button" aria-pressed={category === c} onClick={() => setCategory(c)}
+                      className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${FOCUS} ${category === c ? 'bg-teal-300 text-slate-900' : 'border border-white/15 bg-white/5 text-slate-100 hover:bg-white/10'}`}>
+                {c} <span className={category === c ? 'text-slate-700' : 'text-slate-400'}>({n})</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </Reveal>
+
+      <p role="status" className="mb-4 text-sm text-slate-400">
+        {entries.length === 0 ? '' : `Showing ${filtered.length} of ${entries.length} ${entries.length === 1 ? 'item' : 'items'}`}
+      </p>
+
+      {entries.length === 0 ? (
+        <div className="rounded-3xl border border-dashed border-white/20 bg-white/[0.03] px-6 py-14 text-center">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/5 text-teal-300"><Icon name="folder" className="h-7 w-7" /></span>
+          <h3 className="mt-4 text-xl font-semibold text-white">Nothing in the hub yet</h3>
+          <p className="mx-auto mt-2 max-w-md text-slate-300">
+            {editMode
+              ? 'Add your first assignment, report or project file. It will be saved in this browser only.'
+              : 'No files have been added here yet. Check back soon.'}
+          </p>
+          {editMode && <Button className="mt-6" variant="primary" icon="plus" onClick={() => setFormState({ entry: null })}>Add your first file</Button>}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-3xl border border-dashed border-white/20 bg-white/[0.03] px-6 py-14 text-center">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/5 text-teal-300"><Icon name="search" className="h-7 w-7" /></span>
+          <h3 className="mt-4 text-xl font-semibold text-white">No matches found</h3>
+          <p className="mx-auto mt-2 max-w-md text-slate-300">Try a different keyword or choose another category.</p>
+          {filtersActive && <Button className="mt-6" onClick={clearFilters}>Clear search &amp; filters</Button>}
+        </div>
+      ) : (
+        <ul className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((entry, i) => (
+            <Reveal as="li" key={entry.id} delay={Math.min(i, 5) * 0.08} y={20}>
+              <EntryCard entry={entry} editMode={editMode}
+                         onPreview={() => setPreviewEntry(entry)}
+                         onDownload={() => handleDownload(entry)}
+                         onEdit={() => setFormState({ entry })}
+                         onDelete={() => setDeleteTarget(entry)} />
+            </Reveal>
+          ))}
+        </ul>
+      )}
+
+      {formState && (
+        <EntryFormDialog entry={formState.entry} categories={categories.map(([c]) => c)}
+                         onSave={saveEntry} onClose={() => setFormState(null)} />
+      )}
+      {previewEntry && <PreviewDialog entry={previewEntry} onDownload={() => handleDownload(previewEntry)} onClose={() => setPreviewEntry(null)} />}
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Remove this entry?"
+          confirmLabel="Remove entry"
+          busy={deleting}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={confirmDelete}
+          message={`“${deleteTarget.title}” will be removed from your Portfolio Hub.${deleteTarget.hasFile ? ' The copy stored in this browser will be deleted too (the original file on your computer is not touched).' : ''} This can’t be undone.`}
+        />
+      )}
+    </section>
+  );
+}
+
+function LinksSection({ links, editMode, saveLink, removeLink }) {
+  const [formState, setFormState] = useState(null); // { link: Link | null }
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  return (
+    <section id="links" aria-labelledby="links-title" className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
+      <SectionHeading id="links-title" eyebrow="Social links" title="Find me online"
+        action={editMode && <Button variant="primary" icon="plus" onClick={() => setFormState({ link: null })}>Add link</Button>}>
+        Where to follow my work and get in touch.
+      </SectionHeading>
+
+      {links.length === 0 ? (
+        <div className="rounded-3xl border border-dashed border-white/20 bg-white/[0.03] px-6 py-14 text-center">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/5 text-teal-300"><Icon name="link" className="h-7 w-7" /></span>
+          <h3 className="mt-4 text-xl font-semibold text-white">No links yet</h3>
+          <p className="mx-auto mt-2 max-w-md text-slate-300">
+            {editMode ? 'Add your GitHub, LinkedIn, email or any other profile so visitors can find you.' : 'No social links have been added yet.'}
+          </p>
+          {editMode && <Button className="mt-6" variant="primary" icon="plus" onClick={() => setFormState({ link: null })}>Add your first link</Button>}
+        </div>
+      ) : (
+        <ul className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {links.map((l, i) => {
+            const p = platformById(l.platform);
+            return (
+              <Reveal as="li" key={l.id} delay={Math.min(i, 5) * 0.08} y={20}>
+                <div className="flex h-full flex-col rounded-3xl border border-white/10 bg-white/[0.04] p-5 transition hover:border-white/25 hover:bg-white/[0.07]">
+                  <div className="flex items-center gap-4">
+                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-400/25 to-teal-300/25 text-teal-100 ring-1 ring-inset ring-white/15">
+                      <Icon name={p.icon} className="h-6 w-6" />
+                    </span>
+                    <div className="min-w-0">
+                      <h3 className="truncate font-semibold text-white">{l.label}</h3>
+                      <p className="truncate text-sm text-slate-400" title={displayUrl(l.url)}>{displayUrl(l.url)}</p>
+                    </div>
+                  </div>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <ButtonLink href={safeHref(l.url)} {...extProps(l.url)} size="sm" variant="primary" icon={isMail(l.url) ? 'mail' : 'external'}>
+                      {isMail(l.url) ? 'Send email' : 'Visit'}
+                      <span className="sr-only"> {l.label}{isMail(l.url) ? '' : ' (opens in a new tab)'}</span>
+                    </ButtonLink>
+                    {editMode && (
+                      <>
+                        <Button size="sm" variant="ghost" icon="edit" onClick={() => setFormState({ link: l })} aria-label={`Edit ${l.label} link`}>Edit</Button>
+                        <Button size="sm" variant="ghost" icon="trash" onClick={() => setDeleteTarget(l)} aria-label={`Remove ${l.label} link`}>Remove</Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </Reveal>
+            );
+          })}
+        </ul>
+      )}
+
+      {formState && <LinkFormDialog link={formState.link} onSave={saveLink} onClose={() => setFormState(null)} />}
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Remove this link?"
+          confirmLabel="Remove link"
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => { removeLink(deleteTarget); setDeleteTarget(null); }}
+          message={`The ${deleteTarget.label} link will be removed from the home page and the links section. This can’t be undone.`}
+        />
+      )}
+    </section>
+  );
+}
+
+/* =========================================================================
+   7. DIALOGS — Profile, Entry, Link, Preview, Storage
+   ========================================================================= */
+function ProfileFormDialog({ profile, photoUrl, onSave, onClose }) {
+  const formId = useId();
+  const formRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [v, setV] = useState({
+    name: profile.name, major: profile.major, university: profile.university, status: profile.status,
+    intro: profile.intro, bio: profile.bio, focus: profile.focus,
+    interests: profile.interests.join(', '), skills: profile.skills.join(', '),
+  });
+  const [errors, setErrors] = useState({});
+  const [photo, setPhoto] = useState({ blob: null, previewUrl: null, remove: false });
+  const [photoError, setPhotoError] = useState('');
+  const [submitError, setSubmitError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const set = (k) => (val) => { setV((p) => ({ ...p, [k]: val })); setErrors((p) => ({ ...p, [k]: undefined })); };
+
+  useEffect(() => () => { if (photo.previewUrl) URL.revokeObjectURL(photo.previewUrl); }, [photo.previewUrl]);
+
+  async function onPickPhoto(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoError('');
+    if (!file.type.startsWith('image/')) { setPhotoError('Please choose an image file (JPG, PNG, WebP…).'); return; }
+    if (file.size > MAX_PHOTO_BYTES) { setPhotoError(`That photo is larger than ${formatBytes(MAX_PHOTO_BYTES)}. Choose a smaller one.`); return; }
+    try {
+      const blob = await resizeImage(file);
+      setPhoto({ blob, previewUrl: URL.createObjectURL(blob), remove: false });
+    } catch (err) {
+      setPhotoError(err.message || 'That image could not be processed.');
+    }
+  }
+
+  const shownPhoto = photo.remove ? null : photo.previewUrl || photoUrl;
+
+  async function submit(e) {
+    e.preventDefault();
+    const errs = {};
+    if (!v.name.trim()) errs.name = 'Please enter your name.';
+    else if (v.name.trim().length > 60) errs.name = 'Keep your name under 60 characters.';
+    if (!v.major.trim()) errs.major = 'Please enter your major or field of study.';
+    else if (v.major.trim().length > 80) errs.major = 'Keep this under 80 characters.';
+    if (v.university.trim().length > 80) errs.university = 'Keep this under 80 characters.';
+    if (v.status.trim().length > 60) errs.status = 'Keep this under 60 characters.';
+    if (!v.intro.trim()) errs.intro = 'Write a short introduction for the home page.';
+    else if (v.intro.trim().length > 320) errs.intro = 'Keep the introduction under 320 characters.';
+    if (v.bio.trim().length > 3000) errs.bio = 'Keep the biography under 3,000 characters.';
+    if (v.focus.trim().length > 400) errs.focus = 'Keep this under 400 characters.';
+    if (Object.keys(errs).length) { setErrors(errs); focusFirstInvalid(formRef); return; }
+
+    setSaving(true);
+    setSubmitError('');
+    try {
+      await onSave(
+        {
+          name: v.name.trim(), major: v.major.trim(), university: v.university.trim(), status: v.status.trim(),
+          intro: v.intro.trim(), bio: v.bio.trim(), focus: v.focus.trim(),
+          interests: parseTags(v.interests), skills: parseTags(v.skills),
+        },
+        { blob: photo.blob, remove: photo.remove && !photo.blob }
+      );
+      onClose();
+    } catch (err) {
+      setSubmitError(friendlyError(err));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title="Edit profile & about me" description="Changes are saved in this browser only." size="lg" onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" type="submit" form={formId} disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</Button>
+        </>
+      }>
+      <form id={formId} ref={formRef} onSubmit={submit} noValidate className="space-y-5">
+        <fieldset className="rounded-2xl border border-white/10 p-4">
+          <legend className="px-2 text-sm font-semibold text-slate-100">Profile photo</legend>
+          <div className="flex flex-wrap items-center gap-5">
+            <div className="w-24 shrink-0"><ProfilePhoto name={v.name || 'You'} url={shownPhoto} className="!rounded-2xl" /></div>
+            <div className="min-w-0 flex-1">
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={onPickPhoto} className="sr-only" id={`${formId}-photo`} aria-describedby={`${formId}-photo-hint`} />
+              <div className="flex flex-wrap gap-2">
+                <label htmlFor={`${formId}-photo`}
+                       className={btnClass('secondary', 'sm', 'cursor-pointer focus-within:ring-2')}>
+                  <Icon name="upload" className="h-4 w-4" /> {shownPhoto ? 'Choose a different photo' : 'Choose a photo'}
+                </label>
+                {shownPhoto && (
+                  <Button size="sm" variant="ghost" icon="trash"
+                          onClick={() => setPhoto((p) => ({ blob: null, previewUrl: null, remove: true }))}>Remove photo</Button>
+                )}
+              </div>
+              <p id={`${formId}-photo-hint`} className="mt-2 text-xs text-slate-400">
+                The photo is resized and stored in this browser only. It is not uploaded anywhere.
+              </p>
+              {photoError && <p className="mt-1 text-sm text-rose-300" role="alert">{photoError}</p>}
+            </div>
+          </div>
+        </fieldset>
+
+        <div className="grid gap-5 sm:grid-cols-2">
+          <TextField label="Full name" required value={v.name} onChange={set('name')} error={errors.name} maxLength={80} autoComplete="name" />
+          <TextField label="Major / field of study" required value={v.major} onChange={set('major')} error={errors.major} maxLength={100} />
+          <TextField label="University" value={v.university} onChange={set('university')} error={errors.university} maxLength={100} />
+          <TextField label="Status line" value={v.status} onChange={set('status')} error={errors.status} maxLength={80}
+                     hint="Shown above your name, e.g. “Open to internships”." />
+        </div>
+        <TextField as="textarea" rows={3} label="Short introduction (home page)" required value={v.intro} onChange={set('intro')} error={errors.intro}
+                   maxLength={400} hint={`${v.intro.trim().length}/320 characters`} />
+        <TextField as="textarea" rows={6} label="Biography" value={v.bio} onChange={set('bio')} error={errors.bio} maxLength={3200}
+                   hint="Leave a blank line between paragraphs." />
+        <TextField as="textarea" rows={2} label="Academic focus" value={v.focus} onChange={set('focus')} error={errors.focus} maxLength={450} />
+        <div className="grid gap-5 sm:grid-cols-2">
+          <TextField label="Interests" value={v.interests} onChange={set('interests')} hint="Separate with commas." />
+          <TextField label="Skills" value={v.skills} onChange={set('skills')} hint="Separate with commas." />
+        </div>
+        {submitError && <p className="rounded-xl border border-rose-300/40 bg-rose-950/60 px-4 py-3 text-sm text-rose-100" role="alert">{submitError}</p>}
+      </form>
+    </Modal>
+  );
+}
+
+function EntryFormDialog({ entry, categories, onSave, onClose }) {
+  const isEdit = !!entry;
+  const formId = useId();
+  const formRef = useRef(null);
+  const listId = useId();
+  const fileId = useId();
+  const [title, setTitle] = useState(entry ? entry.title : '');
+  const [category, setCategory] = useState(entry ? entry.category : '');
+  const [description, setDescription] = useState(entry ? entry.description : '');
+  const [file, setFile] = useState(null);
+  const [errors, setErrors] = useState({});
+  const [submitError, setSubmitError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const suggestions = useMemo(() => {
+    const seen = new Set();
+    return [...categories, ...DEFAULT_CATEGORIES].filter((c) => !seen.has(c.toLowerCase()) && seen.add(c.toLowerCase()));
+  }, [categories]);
+
+  function onPickFile(e) {
+    const f = (e.target.files && e.target.files[0]) || null;
+    setFile(f);
+    setErrors((p) => ({ ...p, file: undefined }));
+    if (f && !title.trim()) setTitle(f.name.replace(/\.[^.]+$/, ''));
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    const errs = {};
+    if (!title.trim()) errs.title = 'Please give this entry a title.';
+    else if (title.trim().length > 100) errs.title = 'Keep the title under 100 characters.';
+    if (!category.trim()) errs.category = 'Choose or type a category.';
+    else if (category.trim().length > 30) errs.category = 'Keep the category under 30 characters.';
+    if (description.trim().length > 500) errs.description = 'Keep the description under 500 characters.';
+    if (!isEdit && !file) errs.file = 'Choose a file to add.';
+    else if (file && file.size === 0) errs.file = 'That file is empty. Choose a different file.';
+    else if (file && file.size > MAX_FILE_BYTES) errs.file = `That file is ${formatBytes(file.size)}. The limit is ${formatBytes(MAX_FILE_BYTES)} per file.`;
+    if (Object.keys(errs).length) { setErrors(errs); focusFirstInvalid(formRef); return; }
+
+    const typed = category.trim();
+    const canonical = suggestions.find((c) => c.toLowerCase() === typed.toLowerCase()) || typed;
+
+    setSaving(true);
+    setSubmitError('');
+    try {
+      await onSave({ title: title.trim(), category: canonical, description: description.trim() }, file, entry ? entry.id : null);
+      onClose();
+    } catch (err) {
+      setSubmitError(friendlyError(err));
+      setSaving(false);
+    }
+  }
+
+  const fileErr = errors.file;
+  return (
+    <Modal title={isEdit ? 'Edit entry' : 'Add to Portfolio Hub'}
+           description="The file is saved in this browser only. It is not uploaded anywhere."
+           onClose={onClose}
+           footer={
+             <>
+               <Button onClick={onClose}>Cancel</Button>
+               <Button variant="primary" type="submit" form={formId} disabled={saving}>{saving ? 'Saving…' : isEdit ? 'Save changes' : 'Add entry'}</Button>
+             </>
+           }>
+      <form id={formId} ref={formRef} onSubmit={submit} noValidate className="space-y-5">
+        <TextField label="Title" required value={title} onChange={(val) => { setTitle(val); setErrors((p) => ({ ...p, title: undefined })); }}
+                   error={errors.title} maxLength={120} hint="You can rename an entry any time." />
+        <TextField label="Category" required value={category} onChange={(val) => { setCategory(val); setErrors((p) => ({ ...p, category: undefined })); }}
+                   error={errors.category} maxLength={40} list={listId} autoComplete="off"
+                   hint="Pick a suggestion or type your own, e.g. “Assignment”." />
+        <datalist id={listId}>{suggestions.map((c) => <option key={c} value={c} />)}</datalist>
+        <TextField as="textarea" rows={3} label="Description" value={description}
+                   onChange={(val) => { setDescription(val); setErrors((p) => ({ ...p, description: undefined })); }}
+                   error={errors.description} maxLength={550} hint={`${description.trim().length}/500 characters`} />
+
+        <div>
+          <label htmlFor={fileId} className="mb-1.5 block text-sm font-medium text-slate-100">
+            {isEdit ? 'Replace file (optional)' : 'File'}
+            {!isEdit && <span className="text-rose-300" aria-hidden="true"> *</span>}
+            {!isEdit && <span className="sr-only"> (required)</span>}
+          </label>
+          <input id={fileId} type="file" onChange={onPickFile}
+                 aria-invalid={fileErr ? 'true' : 'false'} aria-describedby={`${fileId}-hint${fileErr ? ` ${fileId}-err` : ''}`}
+                 className="block w-full cursor-pointer rounded-xl border border-white/15 bg-ink-900 text-sm text-slate-200 file:mr-4 file:cursor-pointer file:rounded-l-xl file:border-0 file:bg-teal-300 file:px-4 file:py-2.5 file:font-semibold file:text-slate-900 hover:file:bg-teal-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300 aria-[invalid=true]:border-rose-400" />
+          <p id={`${fileId}-hint`} className="mt-1 text-xs text-slate-400">
+            {file
+              ? `Selected: ${file.name} (${formatBytes(file.size)})`
+              : isEdit && entry.hasFile
+                ? `Current file: ${entry.fileName} (${formatBytes(entry.fileSize)}). Choose a new one only if you want to replace it.`
+                : isEdit
+                  ? 'No file is attached yet. Choose one to attach it.'
+                  : `Any file type, up to ${formatBytes(MAX_FILE_BYTES)}. Your browser only reads the file you pick.`}
+          </p>
+          {fileErr && <p id={`${fileId}-err`} className="mt-1 text-sm text-rose-300">{fileErr}</p>}
+        </div>
+        {submitError && <p className="rounded-xl border border-rose-300/40 bg-rose-950/60 px-4 py-3 text-sm text-rose-100" role="alert">{submitError}</p>}
+      </form>
+    </Modal>
+  );
+}
+
+function LinkFormDialog({ link, onSave, onClose }) {
+  const isEdit = !!link;
+  const formId = useId();
+  const formRef = useRef(null);
+  const [platform, setPlatform] = useState(link ? link.platform : 'github');
+  const [label, setLabel] = useState(link && link.label !== platformById(link.platform).label ? link.label : '');
+  const [url, setUrl] = useState(link ? displayUrl(link.url) : '');
+  const [errors, setErrors] = useState({});
+  const p = platformById(platform);
+
+  function submit(e) {
+    e.preventDefault();
+    const errs = {};
+    const parsed = normalizeUrl(url);
+    if (parsed.error) errs.url = parsed.error;
+    if (platform === 'other' && !label.trim()) errs.label = 'Give this link a name, e.g. “Behance”.';
+    if (label.trim().length > 40) errs.label = 'Keep the name under 40 characters.';
+    if (Object.keys(errs).length) { setErrors(errs); focusFirstInvalid(formRef); return; }
+    onSave({ id: link ? link.id : uid(), platform, label: label.trim() || p.label, url: parsed.url }, isEdit);
+    onClose();
+  }
+
+  return (
+    <Modal title={isEdit ? 'Edit link' : 'Add a social link'} size="md" onClose={onClose}
+           footer={
+             <>
+               <Button onClick={onClose}>Cancel</Button>
+               <Button variant="primary" type="submit" form={formId}>{isEdit ? 'Save changes' : 'Add link'}</Button>
+             </>
+           }>
+      <form id={formId} ref={formRef} onSubmit={submit} noValidate className="space-y-5">
+        <TextField as="select" label="Platform" value={platform} onChange={setPlatform}>
+          {PLATFORMS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+        </TextField>
+        <TextField label={platform === 'email' ? 'Email address' : 'Link'} required value={url}
+                   onChange={(val) => { setUrl(val); setErrors((x) => ({ ...x, url: undefined })); }}
+                   error={errors.url} placeholder={p.placeholder} inputMode={platform === 'email' ? 'email' : 'url'} autoComplete="off"
+                   hint="Paste the address of your profile. “https://” is added for you if you leave it out." />
+        <TextField label={platform === 'other' ? 'Name' : 'Display name (optional)'} required={platform === 'other'} value={label}
+                   onChange={(val) => { setLabel(val); setErrors((x) => ({ ...x, label: undefined })); }}
+                   error={errors.label} placeholder={p.label} maxLength={50} />
+      </form>
+    </Modal>
+  );
+}
+
+function PreviewDialog({ entry, onDownload, onClose }) {
+  const kind = fileKind(entry.fileName, entry.fileType);
+  const [state, setState] = useState({ status: 'loading', url: null, text: '' });
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = null;
+    (async () => {
+      try {
+        const rec = await fileStore.get(entry.id);
+        if (!rec) throw new Error('missing');
+        if (kind === 'text') {
+          const text = await rec.blob.text();
+          if (!cancelled) setState({ status: 'ready', url: null, text: text.length > 200000 ? text.slice(0, 200000) + '\n\n… (preview truncated — download the file to see everything)' : text });
+          return;
+        }
+        let blob = rec.blob;
+        if (!blob.type && kind === 'pdf') blob = new Blob([blob], { type: 'application/pdf' });
+        objectUrl = URL.createObjectURL(blob);
+        if (!cancelled) setState({ status: 'ready', url: objectUrl, text: '' });
+      } catch (e) {
+        if (!cancelled) setState({ status: 'error', url: null, text: '' });
+      }
+    })();
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [entry.id, kind]);
+
+  let body;
+  if (state.status === 'loading') body = <p className="py-10 text-center text-slate-300">Loading preview…</p>;
+  else if (state.status === 'error') {
+    body = (
+      <p className="rounded-xl border border-rose-300/40 bg-rose-950/60 px-4 py-3 text-sm text-rose-100" role="alert">
+        This file could not be read from browser storage. It may have been cleared. Close this window, choose Edit, and attach the file again.
+      </p>
+    );
+  } else if (kind === 'image') body = <img src={state.url} alt={entry.title} className="mx-auto max-h-[65dvh] w-auto max-w-full rounded-xl object-contain" />;
+  else if (kind === 'pdf') {
+    body = (
+      <>
+        <iframe src={state.url} title={`Preview of ${entry.title}`} className="h-[65dvh] w-full rounded-xl bg-white" />
+        <p className="mt-2 text-xs text-slate-400">If the PDF does not appear in your browser, use Download instead.</p>
+      </>
+    );
+  }
+  else if (kind === 'video') body = <video src={state.url} controls className="mx-auto max-h-[65dvh] w-full rounded-xl bg-black" />;
+  else if (kind === 'audio') body = <audio src={state.url} controls className="w-full" />;
+  else body = (
+    <pre tabIndex={0} aria-label={`Contents of ${entry.fileName}`}
+         className="max-h-[65dvh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-ink-950 p-4 text-sm leading-relaxed text-slate-200">{state.text}</pre>
+  );
+
+  return (
+    <Modal title={entry.title} description={`${entry.fileName} · ${formatBytes(entry.fileSize)}`} size="xl" onClose={onClose}
+           footer={
+             <>
+               <Button icon="download" onClick={onDownload}>Download</Button>
+               <Button variant="primary" onClick={onClose} data-autofocus>Close</Button>
+             </>
+           }>
+      {body}
+    </Modal>
+  );
+}
+
+function StorageDialog({ onClose }) {
+  const [usage, setUsage] = useState(null);
+  useEffect(() => {
+    if (navigator.storage && navigator.storage.estimate) {
+      navigator.storage.estimate().then((e) => setUsage(e.usage)).catch(() => {});
+    }
+  }, []);
+  const Item = ({ title, children }) => (
+    <li>
+      <h3 className="font-semibold text-white">{title}</h3>
+      <p className="mt-1 leading-relaxed text-slate-300">{children}</p>
+    </li>
+  );
+  return (
+    <Modal title="How storage works" description="This portfolio is local-first: your content stays on your device." size="lg" onClose={onClose}
+           footer={<Button variant="primary" onClick={onClose} data-autofocus>Got it</Button>}>
+      <ul className="space-y-5 text-sm">
+        <Item title="Where your content is stored">
+          Your profile text, links and entry details are saved in this browser&rsquo;s <strong>localStorage</strong>. Attached files and your profile photo are saved in this browser&rsquo;s <strong>IndexedDB</strong>. Both belong to this site, in this browser, on this device.
+        </Item>
+        <Item title="Nothing is uploaded">
+          Your files are never sent to a server or cloud service. The file picker only lets the page read the files you choose; a website cannot browse your drive. &ldquo;Download&rdquo; saves a copy to your browser&rsquo;s normal downloads folder. (The page itself fetches its code libraries and fonts from public CDNs.)
+        </Item>
+        <Item title="It can be lost">
+          Clearing site data or cookies, using a private/incognito window, resetting or uninstalling the browser, or low-disk cleanup can erase everything saved here. There is no automatic backup, so always keep the original copies of your files.
+        </Item>
+        <Item title="It does not follow you to other devices">
+          Content saved here will not appear on your phone, another computer, or another browser profile. Anyone else who opens this page sees their own empty copy with the sample content — not yours. Showing your portfolio to other people would need hosting and a sync/backup feature, which this app does not include.
+        </Item>
+        <Item title="A stable address helps">
+          Browsers tie storage to a site address. Opening the file from a different location, or serving it from a different address or port, can look like a different site with no saved data.
+        </Item>
+        {usage !== null && (
+          <Item title="Space used">This site is currently using about {formatBytes(usage)} in this browser (estimate reported by the browser).</Item>
+        )}
+      </ul>
+    </Modal>
+  );
+}
+
+/* =========================================================================
+   8. APP — state and wiring
+   ========================================================================= */
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="mx-auto max-w-lg px-4 py-24 text-center">
+          <h1 className="text-2xl font-bold text-white">Something went wrong</h1>
+          <p className="mt-3 text-slate-300">Please reload the page. Your saved content has not been deleted.</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const sanitizeProfile = (v) => {
+  const base = { ...DEFAULT_PROFILE, ...(v && typeof v === 'object' && !Array.isArray(v) ? v : {}) };
+  return { ...base, interests: Array.isArray(base.interests) ? base.interests : [], skills: Array.isArray(base.skills) ? base.skills : [] };
+};
+const sanitizeLinks = (v) => (Array.isArray(v) ? v.filter((l) => l && typeof l.id === 'string' && typeof l.url === 'string') : []);
+const sanitizeEntries = (v) => (Array.isArray(v) ? v.filter((e) => e && typeof e.id === 'string' && typeof e.title === 'string') : []);
+
+function App() {
+  const [profile, setProfile] = usePersistentState('profile', () => ({ ...DEFAULT_PROFILE }), sanitizeProfile);
+  const [links, setLinks] = usePersistentState('links', makeDefaultLinks, sanitizeLinks);
+  const [entries, setEntries] = usePersistentState('entries', makeSampleEntries, sanitizeEntries);
+  const [editMode, setEditMode] = usePersistentState('edit-mode', () => true, (v) => v !== false);
+  const photoUrl = usePhotoUrl(profile.photoVersion);
+
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
+  const [toasts, setToasts] = useState([]);
+
+  const dismissToast = useCallback((id) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+  const notify = useCallback((message, type = 'success') => {
+    const id = uid();
+    setToasts((t) => [...t, { id, message, type }]);
+    setTimeout(() => dismissToast(id), type === 'error' ? 8000 : 4500);
+  }, [dismissToast]);
+
+  useEffect(() => {
+    const onErr = () => notify('Your browser could not save the latest change (storage may be full or blocked).', 'error');
+    window.addEventListener('sp:storage-error', onErr);
+    return () => window.removeEventListener('sp:storage-error', onErr);
+  }, [notify]);
+
+  useEffect(() => { document.title = `${profile.name} — Student Portfolio`; }, [profile.name]);
+
+  /* ---- profile ---- */
+  async function saveProfile(values, photo) {
+    let photoVersion = profile.photoVersion;
+    if (photo.blob) {
+      await fileStore.put({ id: 'profile-photo', blob: photo.blob, name: 'profile-photo', type: photo.blob.type });
+      photoVersion = Date.now();
+    } else if (photo.remove) {
+      try { await fileStore.remove('profile-photo'); } catch (e) { /* nothing to remove */ }
+      photoVersion = null;
+    }
+    setProfile((p) => ({ ...p, ...values, photoVersion, isSample: false }));
+    notify('Profile updated.');
+  }
+
+  /* ---- links ---- */
+  const saveLink = useCallback((link, isEdit) => {
+    setLinks((prev) => (prev.some((l) => l.id === link.id) ? prev.map((l) => (l.id === link.id ? link : l)) : [...prev, link]));
+    notify(isEdit ? 'Link updated.' : 'Link added.');
+  }, [notify]);
+  const removeLink = useCallback((link) => {
+    setLinks((prev) => prev.filter((l) => l.id !== link.id));
+    notify('Link removed.');
+  }, [notify]);
+
+  /* ---- portfolio entries ---- */
+  async function saveEntry(values, file, existingId) {
+    const id = existingId || uid();
+    let filePatch = {};
+    if (file) {
+      await fileStore.put({ id, blob: file, name: file.name, type: file.type });
+      filePatch = { hasFile: true, fileName: file.name, fileType: file.type, fileSize: file.size };
+      try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* best effort */ }
+    }
+    setEntries((prev) => existingId
+      ? prev.map((e) => (e.id === id ? { ...e, ...values, ...filePatch, sample: false } : e))
+      : [{ id, ...values, ...filePatch, hasFile: !!file, dateAdded: new Date().toISOString(), sample: false }, ...prev]);
+    notify(existingId ? 'Entry updated.' : 'Added to your Portfolio Hub.');
+  }
+
+  async function removeEntry(entry) {
+    if (entry.hasFile) {
+      try { await fileStore.remove(entry.id); } catch (e) { /* entry is removed either way */ }
+    }
+    setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+    notify('Entry removed.');
+  }
+
+  return (
+    <>
+      <a href="#main" className="sr-only rounded-full bg-teal-300 px-4 py-2 font-semibold text-slate-900 focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70]">
+        Skip to content
+      </a>
+      <Navbar name={profile.name} editMode={editMode} setEditMode={setEditMode} />
+      {!LS_OK && (
+        <Banner tone="warn">
+          Your browser is blocking storage for this page, so anything you change will be lost when you close or reload it.
+        </Banner>
+      )}
+      {LS_OK && !IDB_OK && (
+        <Banner tone="warn">This browser does not support IndexedDB, so files and photos cannot be saved here.</Banner>
+      )}
+      {editMode && profile.isSample && (
+        <Banner>
+          You&rsquo;re viewing <strong>sample content</strong>. Use <strong>Edit profile</strong>, <strong>Add to hub</strong> and <strong>Add link</strong> to replace it with your own.
+        </Banner>
+      )}
+
+      <main id="main" tabIndex={-1} className="focus:outline-none">
+        <Hero profile={profile} links={links} photoUrl={photoUrl} editMode={editMode} onEditProfile={() => setProfileOpen(true)} />
+        <About profile={profile} editMode={editMode} onEditProfile={() => setProfileOpen(true)} />
+        <PortfolioHub entries={entries} editMode={editMode} saveEntry={saveEntry} removeEntry={removeEntry}
+                      notify={notify} openStorage={() => setStorageOpen(true)} />
+        <LinksSection links={links} editMode={editMode} saveLink={saveLink} removeLink={removeLink} />
+      </main>
+
+      <Footer name={profile.name} onStorageInfo={() => setStorageOpen(true)} />
+      <Toasts toasts={toasts} dismiss={dismissToast} />
+
+      {profileOpen && <ProfileFormDialog profile={profile} photoUrl={photoUrl} onSave={saveProfile} onClose={() => setProfileOpen(false)} />}
+      {storageOpen && <StorageDialog onClose={() => setStorageOpen(false)} />}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
+  </script>
+</body>
+</html>
